@@ -3,12 +3,11 @@ import sublime_plugin
 import re
 import os.path
 
-pattern_anchor = re.compile(r'\[.*?\]')
 pattern_endspace = re.compile(r' *?\z')
 
 pattern_h1_h2_equal_dash = "^.*?(?:(?:\r\n)|\n|\r)(?:-+|=+)$"
 
-#TOCTAG_START = "<!-- MarkdownTOC depth=2 -->"
+TOCTAG_REGEX_START = "^<!-- MarkdownTOC"
 TOCTAG_END = "<!-- /MarkdownTOC -->"
 
 
@@ -19,13 +18,11 @@ class MarkdowntocInsert(sublime_plugin.TextCommand):
         if not self.find_tag_and_insert(edit):
             sels = self.view.sel()
             for sel in sels:
-                default_depth = self.get_default_depth()
 
                 # add TOCTAG
-                toc = "<!-- MarkdownTOC depth=" + \
-                    str(default_depth) + " -->\n"
+                toc = "<!-- MarkdownTOC -->\n"
                 toc += "\n"
-                toc += self.getTOC(default_depth, sel.end())
+                toc += self.getTOC(self.get_default_depth(), sel.end(), self.get_is_multi_markdown())
                 toc += "\n"
                 toc += TOCTAG_END + "\n"
 
@@ -33,38 +30,41 @@ class MarkdowntocInsert(sublime_plugin.TextCommand):
 
         # TODO: process to add another toc when tag exists
 
+    # get inline attributes on the MarkdownTOC comment
+    def get_file_attr(self):
+        depthExtractions = []
+        self.depth = self.get_default_depth()
+        self.view.find_all(
+            TOCTAG_REGEX_START + ".*?depth=(\d+)",
+            sublime.IGNORECASE, '$1', depthExtractions)
+        if 0 < len(depthExtractions) and str(depthExtractions[0]) != '':
+            self.depth = int(depthExtractions[0])
+
+        multiMarkdownExtractions = []
+        self.is_multi_markdown = self.get_is_multi_markdown()
+        self.view.find_all(
+            TOCTAG_REGEX_START + ".*?is_multi_markdown=(true|false)",
+            sublime.IGNORECASE, '$1', multiMarkdownExtractions)
+        if 0 < len(multiMarkdownExtractions) and str(multiMarkdownExtractions[0]) != '':
+            self.is_multi_markdown = multiMarkdownExtractions[0].lower() == "true";
+
     # Search MarkdownTOC comments in document
     def find_tag_and_insert(self, edit):
         sublime.status_message('fint TOC tags and refresh its content')
 
-        extractions = []
+
         toc_starts = self.view.find_all(
-            "^<!-- MarkdownTOC( | depth=([0-9]+) )-->\n",
-            sublime.IGNORECASE, '$2', extractions)
-        depth = None
-        # 1: There is "depth" attr
-        if 0 < len(extractions) and str(extractions[0]) != '':
-            depth = int(extractions[0])
+            TOCTAG_REGEX_START + ".*? -->\n",
+            sublime.IGNORECASE)
+
+        self.get_file_attr()
 
         for toc_start in toc_starts:
             if 0 < len(toc_start):
                 toc_end = self.view.find(
                     "^" + TOCTAG_END + "\n", toc_start.end())
                 if toc_end:
-
-                    if depth is None:  # 2: No "depth" attr
-                        depth = self.get_default_depth()
-                        toctag_start = "<!-- MarkdownTOC depth=" + \
-                            str(depth) + " -->\n"
-                        # add "depth"
-                        self.view.replace(edit, toc_start, toctag_start)
-                        # reset variables
-                        toc_start = self.view.find(
-                            "^" + toctag_start, toc_start.begin())
-                        toc_end = self.view.find(
-                            "^" + TOCTAG_END + "\n", toc_start.end())
-
-                    toc = self.getTOC(depth, toc_end.end())
+                    toc = self.getTOC(self.depth, toc_end.end(), self.is_multi_markdown)
                     tocRegion = sublime.Region(
                         toc_start.end(), toc_end.begin())
                     if toc:
@@ -79,7 +79,13 @@ class MarkdowntocInsert(sublime_plugin.TextCommand):
         return False
 
     # TODO: add "end" parameter
-    def getTOC(self, depth=0, begin=0):
+    def getTOC(self, depth=0, begin=0, is_multi_markdown=True):
+
+        # set anchor pattern
+        if is_multi_markdown:
+            pattern_anchor = re.compile(r'\[(.*?)\]')
+        else:
+            pattern_anchor = re.compile(r'<a name="(.*?)"></a>')
 
         # Search headings in docment
         if depth == 0:
@@ -148,7 +154,7 @@ class MarkdowntocInsert(sublime_plugin.TextCommand):
             if matchObj:
                 only_text = heading_text[0:matchObj.start()]
                 only_text = only_text.rstrip()
-                id_text = matchObj.group().replace('[','').replace(']','')
+                id_text = matchObj.group(1)
                 toc += '- [' + only_text + '](#' + id_text + ')\n'
             else:
                 toc += '- ' + heading_text + '\n'
@@ -156,16 +162,29 @@ class MarkdowntocInsert(sublime_plugin.TextCommand):
         return toc
 
     def get_default_depth(self):
-        setting_file = 'MarkdownTOC.sublime-settings'
-        settings = sublime.load_settings(setting_file)
-        default_depth = settings.get('default_depth')
+        default_depth = self.get_setting('default_depth')
         if default_depth is None:
             default_depth = 2
-            # Save "Settings - Default"
-            settings.set('default_depth', default_depth)
-            sublime.save_settings(setting_file)
+            self.set_setting('default_depth', default_depth)
         return default_depth
 
+    def get_is_multi_markdown(self):
+        is_multi_markdown = self.get_setting('is_multi_markdown')
+        if is_multi_markdown is None:
+            is_multi_markdown = False
+            self.set_setting('is_multi_markdown', is_multi_markdown)
+        return is_multi_markdown
+
+    def get_setting(self, name):
+        settings = sublime.load_settings('MarkdownTOC.sublime-settings')
+        return settings.get(name)
+
+    def set_setting(self, name, value):
+        # Save "Settings - Default"
+        setting_file = 'MarkdownTOC.sublime-settings'
+        settings = sublime.load_settings(setting_file)
+        settings.set(name, value)
+        sublime.save_settings(setting_file)
 
 def isOutOfAreas(num, areas):
     for area in areas:
